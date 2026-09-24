@@ -1,0 +1,693 @@
+"""
+train_gpt_ssn.py
+
+This file descends from the [NanoGPT speedrun](https://github.com/KellerJordan/modded-nanogpt)
+(records/track_3_optimization/train_gpt_simple.py).
+This version replaces data parallelism with real pipeline parallelism — one stage per rank
+via torch.distributed.pipelining plus simulated slow links via receiver-side delays.
+"""
+
+import os
+import sys
+with open(sys.argv[0]) as f:
+    code = f.read() # read the code of this file ASAP, for logging
+import uuid
+import time
+from pathlib import Path
+
+import torch
+from torch import Tensor, nn
+from torch.optim import AdamW
+import torch.nn.functional as F
+import torch.distributed as dist
+from torch.distributed.pipelining import PipelineStage, Schedule1F1B
+
+
+########################################
+#              Dataloader              #
+########################################
+
+# ===== FROZEN: the dataloader — do not edit between these markers =====
+def _load_data_shard(file: Path):
+    header = torch.from_file(str(file), False, 256, dtype=torch.int32) # header is 256 int32
+    assert header[0] == 20240520, "magic number mismatch in the data .bin file"
+    assert header[1] == 1, "unsupported version"
+    num_tokens = int(header[2]) # number of tokens (claimed)
+    with file.open("rb", buffering=0) as f:
+        tokens = torch.empty(num_tokens, dtype=torch.uint16, pin_memory=True)
+        f.seek(256 * 4)
+        nbytes = f.readinto(tokens.numpy()) # avoid bytes->array copy
+        assert nbytes == 2 * num_tokens, "number of tokens read does not match header"
+    return tokens
+
+def distributed_data_generator(filename_pattern: str, batch_size: int, seq_len=1024):
+    files = sorted(Path.cwd().glob(filename_pattern))
+    file_iter = iter(files)
+    tokens, pos = _load_data_shard(next(file_iter)), 0
+    while True:
+        if pos + batch_size + 1 >= len(tokens):
+            tokens, pos = _load_data_shard(next(file_iter)), 0
+        buf = tokens[pos:][:batch_size + 1]
+        inputs = buf[:-1].to(device="cuda", dtype=torch.int32, non_blocking=True)
+        targets = buf[1:].to(device="cuda", dtype=torch.int64, non_blocking=True)
+        pos += batch_size
+        yield inputs.view(-1, seq_len), targets.view(-1, seq_len)
+# ===== END FROZEN =====
+
+
+########################################
+#        SSN (subspace network)        #
+########################################
+
+VOCAB_SIZE = 50304
+NUM_LAYERS = 8
+MODEL_DIM = 1024
+SSN_K = 160             # subspace rank
+assert 0 < SSN_K < MODEL_DIM and SSN_K % 8 == 0
+
+FFN_HIDDEN = 11292
+
+ssn = dict(U=None, fixed=None)
+
+def ssn_setup():
+    """Seed-derived on every rank, so no comm is owed."""
+    gen = torch.Generator().manual_seed(1337)  # CPU: identical on every rank
+    U = torch.linalg.qr(torch.randn(MODEL_DIM, SSN_K, generator=gen))[0]
+    fixed = torch.randn(VOCAB_SIZE, MODEL_DIM, generator=gen)
+    ssn["U"] = U.cuda()
+    ssn["fixed"] = fixed.to(torch.bfloat16).cuda()
+
+class SubspaceLinear(nn.Module):
+    def __init__(self, in_features):
+        super().__init__()
+        self.weight = nn.Parameter(torch.empty(SSN_K, in_features))
+        self.bias = nn.Parameter(torch.empty(SSN_K))
+
+    def forward(self, x):
+        z = F.linear(x, self.weight.type_as(x), self.bias.type_as(x))
+        return F.linear(z, ssn["U"].type_as(x))
+
+class SubspaceEmbedding(nn.Module):
+    def __init__(self, num_embeddings):
+        super().__init__()
+        self.weight = nn.Parameter(torch.empty(num_embeddings, SSN_K, dtype=torch.bfloat16))
+
+    def forward(self, tokens):
+        return F.embedding(tokens, self.weight) @ ssn["U"].T.type_as(self.weight)
+
+
+########################################
+#             Architecture             #
+########################################
+
+class RMSNorm(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.gains = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x):
+        return F.rms_norm(x, (x.size(-1),), weight=self.gains.type_as(x))
+
+class Linear(nn.Linear):
+    def __init__(self, in_features, out_features):
+        super().__init__(in_features, out_features, bias=True)
+
+    def forward(self, x):
+        return F.linear(x, self.weight.type_as(x), self.bias.type_as(x))
+
+class Rotary(nn.Module):
+    def __init__(self, dim: int):
+        super().__init__()
+        # half-truncate RoPE (w/ base freq tuning)
+        angular_freq = (1 / 1024) ** torch.linspace(0, 1, steps=dim//4, dtype=torch.float32)
+        self.register_buffer("angular_freq", torch.cat([angular_freq, angular_freq.new_zeros(dim//4)]))
+
+    def forward(self, x_BTHD: Tensor):
+        pos = torch.arange(x_BTHD.size(1), dtype=torch.float32, device=x_BTHD.device)
+        theta = torch.outer(pos, self.angular_freq)[None, :, None, :]
+        cos, sin = theta.cos(), theta.sin()
+        x1, x2 = x_BTHD.to(dtype=torch.float32).chunk(2, dim=-1)
+        y1 = x1 * cos + x2 * sin
+        y2 = x1 * (-sin) + x2 * cos
+        return torch.cat((y1, y2), 3).type_as(x_BTHD)
+
+class CausalSelfAttention(nn.Module):
+    def __init__(self, dim: int, head_dim=128, subspace=False):
+        super().__init__()
+        self.num_heads = dim // head_dim
+        self.head_dim = head_dim
+        hdim = self.num_heads * self.head_dim
+        self.q = Linear(dim, hdim)
+        self.k = Linear(dim, hdim)
+        self.v = Linear(dim, hdim)
+        self.proj = SubspaceLinear(hdim) if subspace else Linear(hdim, dim)
+        self.rotary = Rotary(head_dim)
+
+    def forward(self, x: Tensor):
+        B, T = x.size(0), x.size(1)
+        q = self.q(x).view(B, T, self.num_heads, self.head_dim)
+        k = self.k(x).view(B, T, self.num_heads, self.head_dim)
+        v = self.v(x).view(B, T, self.num_heads, self.head_dim)
+        q, k = F.rms_norm(q, (q.size(-1),)), F.rms_norm(k, (k.size(-1),))
+        q, k = self.rotary(q), self.rotary(k)
+        y = F.scaled_dot_product_attention(q.transpose(1, 2), k.transpose(1, 2),
+                                           v.transpose(1, 2), scale=0.12, is_causal=True).transpose(1, 2)
+        y = y.contiguous().view(B, T, self.num_heads * self.head_dim)
+        y = self.proj(y)
+        return y
+
+class MLP(nn.Module):
+    def __init__(self, dim: int, hdim: int, subspace=False):
+        super().__init__()
+        self.fc = Linear(dim, hdim)
+        self.proj = SubspaceLinear(hdim) if subspace else Linear(hdim, dim)
+
+    def forward(self, x: Tensor):
+        x = self.fc(x)
+        x = x.relu().square()
+        x = self.proj(x)
+        return x
+
+class Block(nn.Module):
+    def __init__(self, dim: int, hdim: int, subspace=False):
+        super().__init__()
+        self.attn = CausalSelfAttention(dim, subspace=subspace)
+        self.mlp = MLP(dim, hdim, subspace=subspace)
+        self.norm1 = RMSNorm(dim)
+        self.norm2 = RMSNorm(dim)
+
+    def forward(self, x: Tensor):
+        x = x + self.attn(self.norm1(x))
+        x = x + self.mlp(self.norm2(x))
+        return x
+
+class GPT(nn.Module):
+    def __init__(self, vocab_size: int, num_layers: int, model_dim: int):
+        super().__init__()
+        self.embed = SubspaceEmbedding(vocab_size)
+        self.blocks = nn.ModuleList([Block(model_dim, FFN_HIDDEN,  # last block is full-rank
+                                           subspace=i < num_layers - 1)
+                                     for i in range(num_layers)])
+        self.proj = Linear(model_dim, vocab_size)  # stock full V x d head
+        self.norm2 = RMSNorm(model_dim)
+
+########################################
+#             Pipeline wire            #
+########################################
+# Everything that crosses a pipeline stage boundary leaves through wire_pack and arrives
+# through wire_unpack. The meter bills what arrives: the full tensors, or just the
+# declared used bytes when the message is framed. Two pairs of functions are yours to edit:
+#
+#   encode / decode  --  "in-graph" transforms: changes to the activations, done under autograd.
+#       Anything whose gradient matters goes here: subspace projection, rank drop, dtype
+#       cast. Fixed-rate compression is this pair (the message shrinks because encode's
+#       output is smaller). A quantizer whose backward needs the forward value also goes
+#       here, written as a custom autograd.Function with ctx.save_for_backward.
+#
+#   pack / unpack    --  the "transport codec": changes to the raw bytes, done outside autograd.
+#       Byte coding that autograd must not see goes here: quantization (round-to-nearest
+#       forward, stochastic rounding on the gradient leg via the backward flag) and
+#       variable-length compression (entropy coding, sparsity). NCCL needs fixed shapes,
+#       so pack returns a fixed-size zero-padded tensor plus the byte count actually used,
+#       and the meter bills only the used bytes. The wire carries floating tensors, so
+#       integer codes ride bitcast into a bfloat16 container (bits, not numbers).
+
+# eager: Inductor cannot lower the uint16 <-> bf16 id bitcasts
+@torch.compiler.disable
+def encode(x: Tensor, tokens: Tensor) -> Tensor:
+    """-> [mbs, 1024, SSN_K + 1] bf16: the k coordinates of x around the fixed embedding,
+    and the token ids bitcast into the last slot. The coordinates carry the gradient."""
+    fixed = F.embedding(tokens, ssn["fixed"]).type_as(x)
+    coords = ((x - fixed) @ ssn["U"].type_as(x)).to(torch.bfloat16)
+    id_slot = tokens.to(torch.uint16).view(torch.bfloat16).unsqueeze(-1)
+    return torch.cat([coords, id_slot], dim=-1)
+
+@torch.compiler.disable
+def decode(x: Tensor):
+    """[mbs, 1024, SSN_K + 1] off the wire -> (activations, token ids)."""
+    # clamp: torch's shape inference runs the stage once on an uninitialized recv buffer
+    tokens = x[..., SSN_K].detach().contiguous().view(torch.uint16).int().clamp_(max=VOCAB_SIZE - 1)
+    # contiguous: a strided GEMM input picks a different cuBLAS path (different bf16 bits)
+    coords = x[..., :SSN_K].contiguous()
+    U = ssn["U"].type_as(coords)
+    return coords @ U.T + F.embedding(tokens, ssn["fixed"]).type_as(coords), tokens
+
+def pack(t: Tensor, backward: bool = False) -> tuple[Tensor, int]:
+    """Runs on both legs (backward=True on the gradient leg). Returns a payload (fresh
+    fixed-shape floating tensor, never a view of t) and n, the count of real leading bytes."""
+    return t.detach().clone(), t.numel() * t.element_size()
+
+def unpack(payload: Tensor, meta, backward: bool = False) -> Tensor:
+    """Inverse of pack. meta is the (shape, dtype) of the raw tensor. `used` never arrives
+    (the meter consumed it), so recover the coded length from meta or your own header."""
+    shape, dtype = meta
+    return payload.view(dtype).view(shape)
+
+# ===== FROZEN: the wire frame — do not edit between these markers =====
+class _WirePack(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, t: Tensor):
+        # compress activations -> (payload, count), sent to the NEXT stage
+        ctx.meta = (t.shape, t.dtype)
+        payload, n = pack(t, backward=False)
+        return payload, torch.tensor([float(n)], dtype=torch.float64, device=t.device)
+
+    @staticmethod
+    def backward(ctx, g_payload: Tensor, g_used: Tensor):
+        # decompress the activation gradients received FROM the next stage
+        # (the meter already zeroed g_payload past g_used)
+        return unpack(g_payload, ctx.meta, backward=True)
+
+class _WireUnpack(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, payload: Tensor, used: Tensor, meta):
+        # decompress the activations received FROM the previous stage
+        # (`used` was already consumed by the meter: zero + bill)
+        return unpack(payload, meta, backward=False)
+
+    @staticmethod
+    def backward(ctx, g: Tensor):
+        # compress activation gradients -> (payload, count), sent to the PREVIOUS stage
+        payload, n = pack(g, backward=True)   # the count travels as the gradient of `used`
+        return payload, torch.tensor([float(n)], dtype=torch.float64, device=g.device), None
+
+# Keep out of torch.compile: the compiler (Inductor) cannot generate code for byte-level
+# dtype reinterpretation (view(torch.uint8) <-> view(torch.bfloat16)) or data-dependent sizes.
+@torch.compiler.disable
+def wire_pack(t: Tensor):
+    return _WirePack.apply(t)
+
+@torch.compiler.disable
+def wire_unpack(x: Tensor, used: Tensor, meta) -> Tensor:
+    return _WireUnpack.apply(x, used, meta)
+# ===== END FROZEN =====
+
+
+########################################
+#           Pipeline stages            #
+########################################
+
+class GPTStage(nn.Module):
+    def __init__(self, gpt: GPT, stage_index: int, num_stages: int):
+        super().__init__()
+        self.is_first = stage_index == 0
+        self.is_last = stage_index == num_stages - 1
+        if self.is_first:
+            self.embed = gpt.embed
+        self.block = gpt.blocks[stage_index]              # 1 layer per stage
+        if self.is_last:
+            self.norm2, self.proj = gpt.norm2, gpt.proj
+        if not self.is_first:   # raw (shape, dtype) on this stage's inbound boundary
+            self.wire_meta = ((mbs, 1024, SSN_K + 1), torch.bfloat16)
+
+    def forward(self, x: Tensor, used: Tensor = None, targets: Tensor = None):
+        if self.is_first:                # x: int32 token ids [mbs, 1024]
+            tokens = x
+            x = self.embed(tokens) + F.embedding(tokens, ssn["fixed"])
+        else:                            # x is the wire payload and used is its declared byte count
+            # ===== FROZEN: the wire recv — do not edit this line =====
+            x = wire_unpack(x, used, self.wire_meta)
+            # ===== END FROZEN =====
+            x, tokens = decode(x)
+
+        x = self.block(x)
+        if self.is_last:                 # returns the per-microbatch loss scalar
+            logits = self.proj(self.norm2(x)).float()
+            logits = 15 * logits * (logits.square() + 15**2).rsqrt()
+            return F.cross_entropy(logits.view(targets.numel(), -1), targets.view(-1), reduction="sum")
+        x = encode(x, tokens)
+        # ===== FROZEN: the wire send — do not edit this line =====
+        return wire_pack(x)
+        # ===== END FROZEN =====
+
+# ===== FROZEN: the meter — do not edit between these markers =====
+WAN_MODE = os.environ.get("WAN_MODE", "off")
+assert WAN_MODE in ("on", "off"), f"WAN_MODE must be 'on' or 'off', got {WAN_MODE!r}"
+LINK_BANDWIDTH = 200e6
+LINK_LATENCY = 0.05
+simulating = WAN_MODE == "on"
+TARGET_LOSS = 3.276
+
+class SimPipelineStage(PipelineStage):
+    """Receiver-side link simulation, schedule-agnostic via the overridden _retrieve_recv_* methods. A message ending in a 1D float64 counts vector is a frame: the meter zeroes each payload past its count and bills only the counts (_billable), so under-declaring destroys the sender's own data. Each message carries an 8-byte sent_at stamp so the delay is billed from the sender's clock, letting compute and communication overlap on the receive side."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.arrives_at = 0.0     # wall clock at which the last message on this rank's inbound wire lands
+        self.sent_at = {}         # chunk key -> float64[1] CUDA buffer holding the sender's wall clock
+        self.wire_bits = 0        # payload bits billed against this rank's inbound wire
+
+    def _with_sent_at(self, ops, key=None):
+        if simulating and ops:
+            t = (torch.tensor([time.time()], dtype=torch.float64, device=self.device) if key is None
+                 else self.sent_at.setdefault(key, torch.empty(1, dtype=torch.float64, device=self.device)))
+            ops = ops + [dist.P2POp(ops[0].op, t, group=self.group, group_peer=ops[0].group_peer)]
+        return ops
+
+    def get_fwd_send_ops(self, fwd_chunk_id):
+        return self._with_sent_at(super().get_fwd_send_ops(fwd_chunk_id))
+
+    def get_bwd_send_ops(self, bwd_chunk_id):
+        return self._with_sent_at(super().get_bwd_send_ops(bwd_chunk_id))
+
+    def get_fwd_recv_ops(self, fwd_chunk_id):
+        return self._with_sent_at(super().get_fwd_recv_ops(fwd_chunk_id), ("f", fwd_chunk_id))
+
+    def get_bwd_recv_ops(self, bwd_chunk_id):
+        return self._with_sent_at(super().get_bwd_recv_ops(bwd_chunk_id), ("b", bwd_chunk_id))
+
+    def _billable(self, tensors):
+        framed = (len(tensors) >= 2 and tensors[-1] is not None
+                  and tensors[-1].dtype == torch.float64 and tensors[-1].ndim == 1
+                  and tensors[-1].numel() == len(tensors) - 1)
+        if not framed:
+            return sum(t.element_size() * t.numel() for t in tensors if t is not None)
+        *slots, used = tensors
+        with torch.no_grad():
+            counts = used.detach().to(torch.int64).tolist()
+            total = used.numel() * used.element_size()
+            for t, k in zip(slots, counts):
+                if t is None:
+                    continue
+                flat = t.detach().view(torch.uint8).view(-1)
+                k = min(max(int(k), 0), flat.numel())
+                flat[k:].zero_()   # destroy every byte past the declared count: only billed bytes are readable
+                total += k
+        return total
+
+    def add_delay(self, nbytes, key):
+        evt = torch.cuda.Event(); evt.record(); evt.synchronize()   # payload and sent_at have landed
+        total_bits = 8 * nbytes
+        self.wire_bits += total_bits
+        sent_at = self.sent_at.pop(key).item() if key in self.sent_at else time.time()
+        starts_at = max(self.arrives_at, sent_at)        # data is ready AND the wire is free
+        self.arrives_at = starts_at + total_bits / LINK_BANDWIDTH + LINK_LATENCY
+        time.sleep(max(0.0, self.arrives_at - time.time()))
+
+    def _retrieve_recv_activations(self, fwd_chunk_id):
+        acts = super()._retrieve_recv_activations(fwd_chunk_id)
+        nbytes = self._billable(list(acts))
+        if simulating:
+            self.add_delay(nbytes, ("f", fwd_chunk_id))
+        return acts
+
+    def _retrieve_recv_grads(self, bwd_chunk_id):
+        grads = super()._retrieve_recv_grads(bwd_chunk_id)
+        nbytes = self._billable(list(grads))
+        if simulating:
+            self.add_delay(nbytes, ("b", bwd_chunk_id))
+        return grads
+
+    def forward_one_chunk(self, fwd_chunk_id, *args, **kwargs):
+        out = super().forward_one_chunk(fwd_chunk_id, *args, **kwargs)
+        if simulating:
+            # 1F1B's mixed send/recv batching stalls the pipe without this
+            evt = torch.cuda.Event(); evt.record(); evt.synchronize()
+        return out
+
+    def backward_one_chunk(self, bwd_chunk_id, *args, **kwargs):
+        out = super().backward_one_chunk(bwd_chunk_id, *args, **kwargs)
+        if simulating:
+            evt = torch.cuda.Event(); evt.record(); evt.synchronize()
+        return out
+
+# ===== END FROZEN =====
+
+
+########################################
+#              Optimizer               #
+########################################
+
+def zeropower_via_newtonschulz5(G: Tensor) -> Tensor:
+    assert G.ndim >= 2
+    X = G.bfloat16()
+    if G.size(-2) > G.size(-1):
+        X = X.mT
+
+    # Ensure spectral norm is at most 1
+    X = X / (X.norm(dim=(-2, -1), keepdim=True) + 1e-7)
+    # Perform the NS iterations, not optimizing for wallclock speed
+    a, b, c = 2, -1.5, 0.5
+    for _ in range(12):
+        A = X @ X.mT
+        B = b * A + c * A @ A
+        X = a * X + B @ X
+
+    if G.size(-2) > G.size(-1):
+        X = X.mT
+    return X
+
+@torch.compile
+def muon_update(grad, momentum, mu=0.95, nesterov=True):
+    momentum.lerp_(grad, 1 - mu)
+    update = grad.lerp_(momentum, mu) if nesterov else momentum
+    update = zeropower_via_newtonschulz5(update)
+    update *= max(1, grad.size(-2) / grad.size(-1))**0.5
+    return update
+
+class Muon(torch.optim.Optimizer):
+    def __init__(self, params, lr=0.02, weight_decay=0, mu=0.95):
+        assert isinstance(params, list) and len(params) >= 1 and isinstance(params[0], torch.nn.Parameter)
+        params = sorted(params, key=lambda x: x.size(), reverse=True)
+        defaults = dict(lr=lr, weight_decay=weight_decay, mu=mu)
+        super().__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self):
+        for group in self.param_groups:
+            for p in group["params"]:
+                state = self.state[p]
+                if len(state) == 0:
+                    state["momentum"] = torch.zeros_like(p)
+                # mu as a tensor: the momentum warmup must not retrigger compilation
+                update = muon_update(p.grad, state["momentum"], mu=p.new_tensor(group["mu"]))
+                p.mul_(1 - group["lr"] * group["weight_decay"])
+                p.add_(update, alpha=-group["lr"])
+
+
+########################################
+#                Setup                 #
+########################################
+
+# torchrun sets these env variables
+device = torch.device("cuda", int(os.environ["LOCAL_RANK"]))
+torch.cuda.set_device(device)
+dist.init_process_group(backend="nccl", device_id=device)
+dist.barrier()
+rank = dist.get_rank()
+world_size = dist.get_world_size()
+
+# ===== FROZEN: self-logging — do not edit between these markers =====
+# rule 4's mechanism: the logfile must contain everything needed to reproduce the run,
+# starting with this file's own source
+if rank == 0:
+    os.makedirs("logs", exist_ok=True)
+    logfile = f"logs/{uuid.uuid4()}.txt"
+    print(logfile)
+def print0(s, console=False, log=True):
+    if rank == 0:
+        if console:
+            print(s)
+        if log:
+            with open(logfile, "a") as f:
+                print(s, file=f)
+print0(code)
+# ===== END FROZEN =====
+print0("="*100)
+print0(f"Running PyTorch {torch.version.__version__} compiled for CUDA {torch.version.cuda}"
+       + f" on {torch.cuda.get_device_name(device)} with world_size {world_size} schedule wan_mode {WAN_MODE}"
+       + f" link {LINK_BANDWIDTH:.4g}bits/s")
+print0("="*100)
+
+# ===== FROZEN: problem size — do not edit between these markers =====
+val_tokens = 20 * 524288
+batch_size = 8 * 64 * 1024 # tokens per step (512 sequences)
+assert world_size == 8, "the model is cut across eight nodes; fewer ranks means fewer metered boundaries"
+# ===== END FROZEN =====
+mbs = 16                   # sequences per microbatch
+n_microbatches = batch_size // 1024 // mbs
+# ===== FROZEN: the data — do not edit this line =====
+val_inputs, val_targets = next(distributed_data_generator("data/fineweb10B/fineweb_val_*.bin", val_tokens))
+# ===== END FROZEN =====
+
+model = GPT(vocab_size=VOCAB_SIZE, num_layers=NUM_LAYERS, model_dim=MODEL_DIM)
+# ===== FROZEN: parameter cap — do not edit between these markers =====
+BASELINE_PARAMS = 203_828_352
+num_params = sum(p.numel() for p in model.parameters())
+print0(f"total params: {num_params:,} (baseline {BASELINE_PARAMS:,})", console=True)
+assert num_params <= BASELINE_PARAMS, f"rule 1: {num_params:,} params exceeds the baseline {BASELINE_PARAMS:,}"
+# ===== END FROZEN =====
+assert len(model.blocks) == world_size, "one stage (= one layer) per rank"
+ssn_setup()  # seed-derived constants, identical on every rank and every trial
+# keep only this rank's stage on the device. Every rank owns disjoint params
+stage_mod = GPTStage(model, rank, world_size).cuda()
+del model
+stage_mod.compile(dynamic=False)
+# Declared wire shapes. None means shape inference, fine for the identity codec.
+# A real codec should declare (payload_example, used_example) with requires_grad.
+stage_in, stage_out = None, None
+# ===== FROZEN: meter wrapper — do not edit between these markers =====
+stage = SimPipelineStage(stage_mod, rank, world_size, device, input_args=stage_in, output_args=stage_out)
+# ===== END FROZEN =====
+schedule = Schedule1F1B(stage, n_microbatches=n_microbatches,
+                        loss_fn=lambda out, tgt: out,
+                        scale_grads=False)
+
+
+num_trials = int(sys.argv[-1]) if len(sys.argv) > 1 else 1
+
+for _ in range(num_trials):
+
+
+    ########################################
+    #       Init & Optim Hyperparams       #
+    ########################################
+
+    # Fewer steps reduce T as long as the run still reaches 3.276
+    train_steps = 9500
+
+    # initialize model parameters
+    for name, p in stage_mod.named_parameters():
+        w = p.data
+        if name.endswith("weight"):
+            if "proj" in name:
+                w.zero_()
+            elif "embed" in name:
+                w.normal_()  # default torch init
+            else:
+                w.normal_(std=0.33**0.5 / w.size(-1)**0.5)  # default torch init
+        elif name.endswith("bias"):
+            w.zero_()
+        elif name.endswith("gains"):
+            w.normal_(mean=1, std=0)
+        else:
+            raise Exception(f"Uninitialized parameter: {name}")
+
+    # create the optimizer(s): stage-conditional groups
+    adamw_groups = []
+    if stage_mod.is_first:
+        adamw_groups.append(dict(params=[stage_mod.embed.weight], lr=0.525))
+    if stage_mod.is_last:
+        adamw_groups.append(dict(params=[stage_mod.proj.weight], lr=0.003))
+    adamw_groups.append(dict(params=[p for p in stage_mod.parameters() if p.ndim < 2], lr=0.01125))
+    optimizer1 = AdamW(adamw_groups, betas=(0.8, 0.95), eps=1e-10, weight_decay=0.001, fused=True)
+    optimizer2 = Muon([p for p in stage_mod.block.parameters() if p.ndim >= 2],
+                      lr=0.02, weight_decay=0.05)
+    optimizers = [optimizer1, optimizer2]
+    # every stage param in exactly one optimizer
+    opt_params = [p for opt in optimizers for group in opt.param_groups for p in group["params"]]
+    assert len(opt_params) == len(set(opt_params))
+    assert set(opt_params) == set(stage_mod.parameters())
+    for opt in optimizers:
+        for group in opt.param_groups:
+            group["initial_lr"] = group["lr"]
+
+    # learning rate schedule: decay from the start
+    def set_hparams(step, cooldown_frac=1.0):
+        progress = step / train_steps
+        assert 0 <= progress < 1
+        if progress < 1 - cooldown_frac:
+            eta = 1.0
+        else:
+            eta = (1 - progress) / cooldown_frac
+        for opt in optimizers:
+            for group in opt.param_groups:
+                group["lr"] = group["initial_lr"] * eta
+        for group in optimizer2.param_groups:  # Muon momentum warmup
+            group["mu"] = 0.85 + 0.12 * min(step / 500, 1.0)
+
+
+    ########################################
+    #        Training and Validation       #
+    ########################################
+
+    # ===== FROZEN: data + clock — do not edit between these markers =====
+    train_loader = distributed_data_generator("data/fineweb10B/fineweb_train_*.bin", batch_size)
+    # start the clock
+    training_time = 0
+    last_val_step = 0
+    windows = []  # per-window step_avg of the timing run
+    dist.barrier()
+    t0 = time.perf_counter()
+    # ===== END FROZEN =====
+    for step in range(train_steps + 1):
+
+        # --------------- VALIDATION SECTION -----------------
+        # ===== FROZEN: val cadence + clock stop — do not edit between these markers =====
+        val_step_freq = 10 if WAN_MODE == "on" else (125 if step / train_steps < 0.9 else 25)
+        if step == train_steps or step % val_step_freq == 0:
+            # stop the clock
+            dist.barrier()
+            time_since_last_val = time.perf_counter() - t0
+            step_avg = time_since_last_val / (step - last_val_step) if step > 0 else float("nan")
+            last_val_step = step
+            training_time += time_since_last_val
+            simulating = False  # clock is stopped: run val at full link speed
+            # ===== END FROZEN =====
+            val_loss = torch.zeros((), device=device)
+            with torch.no_grad():
+                assert val_tokens % batch_size == 0
+                for i in range(val_tokens // batch_size):
+                    sl = slice(i * batch_size // 1024, (i + 1) * batch_size // 1024)
+                    if stage_mod.is_first:
+                        schedule.eval(val_inputs[sl])
+                    elif stage_mod.is_last:
+                        losses = []  # filled with the per-microbatch losses
+                        schedule.eval(target=val_targets[sl], losses=losses,
+                                      targets=val_targets[sl], return_outputs=False)
+                        val_loss += sum(l.float() for l in losses)
+                    else:
+                        schedule.eval()
+            # ===== FROZEN: scoring + clock restart — do not edit between these markers =====
+            val_loss /= val_tokens
+            dist.broadcast(val_loss, src=world_size - 1)  # loss materializes on the last rank
+            print0(f"step:{step}/{train_steps} val_loss:{val_loss.item():.5f} train_time:{training_time:.3f}s"
+                   + f" step_avg:{1000*step_avg:.2f}ms", console=True)
+            if step == train_steps:
+                reached = "REACHED" if float(val_loss) <= TARGET_LOSS else "MISSED"
+                print0(f"TARGET {TARGET_LOSS} {reached} final val_loss:{float(val_loss):.5f}",
+                       console=True)
+            # steady state: the three latest windows agree within 1% (window 1 is compile and never counts).
+            if WAN_MODE == "on" and step > val_step_freq:
+                windows.append(step_avg)
+                wire = torch.tensor([float(stage.wire_bits)], dtype=torch.float64, device=device)
+                dist.all_reduce(wire)   # each rank counts only its own inbound wire
+                if len(windows) >= 3 and max(windows[-3:]) / min(windows[-3:]) - 1 < 0.01:
+                    steady = sorted(windows[-3:])[1]
+                    T = train_steps * steady
+                    bytes_per_token = wire.item() / 8 / (world_size - 1) / (batch_size * step)
+                    print0(f"STEADY at step:{step} step_avg:{1000*steady:.2f}ms"
+                           + f" bytes_per_token:{bytes_per_token:.1f}")
+                    print0(f"T = {train_steps} steps x {steady:.4f}s = {T:.1f}s", console=True)
+                    break
+            # start the clock again
+            simulating = WAN_MODE == "on"
+            dist.barrier()
+            t0 = time.perf_counter()
+            # ===== END FROZEN =====
+
+        if step == train_steps:
+            break
+
+        # --------------- TRAINING SECTION -----------------
+        inputs, targets = next(train_loader)
+        if stage_mod.is_first:
+            schedule.step(inputs)
+        elif stage_mod.is_last:
+            # targets= is microbatched by the schedule into GPTStage.forward
+            schedule.step(target=targets, targets=targets, return_outputs=False)
+        else:
+            schedule.step()
+        if step == 0:
+            for name, p in stage_mod.named_parameters():
+                assert p.grad is not None, name
+        # set optimization hyperparameters and take a step
+        set_hparams(step)
+        for opt in optimizers:
+            opt.step()
+        stage_mod.zero_grad(set_to_none=True)
+        approx_training_time = training_time + (time.perf_counter() - t0)
+        print0(f"step:{step+1}/{train_steps} train_time:{approx_training_time:.3f}s"
+               + f" step_avg:{1000*approx_training_time/(step + 1):.2f}ms", console=True, log=False)
+
+dist.destroy_process_group()

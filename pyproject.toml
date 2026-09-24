@@ -1,0 +1,14 @@
+[project]
+name = "protocolnanogpt"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["torch==2.14.0", "numpy", "huggingface_hub"]
+
+[project.optional-dependencies]
+track = ["wandb"]
+
+[tool.uv]
+package = false
+# Always use the interpreter uv downloads. Distribution pythons often lack the headers
+# that torch.compile needs to build its C extensions.
+python-preference = "only-managed"

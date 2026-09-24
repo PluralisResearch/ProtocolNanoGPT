@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+.DS_Store
+
+# fineweb data shards (600MB+, re-downloadable via data/cached_fineweb10B.py)
+data/fineweb10B/
