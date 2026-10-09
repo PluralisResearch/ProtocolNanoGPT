@@ -8,11 +8,12 @@ Live board with the record-progression plot: [pluralis.ai/protocol-nanogpt](http
 
 | # | Author | Description | T | Evidence | Date |
 |---:|---|---|---|---|---:|
-| 1 | [Paul Janson](https://x.com/janson002) | mapl anchor 128, quantized | **72,443 s**<br>≈ 20h 7m | 3.2760@6825<br>10.61 s/step<br>253 B/token | 2026-10-05 |
-| 2 | random_sequence | SSN 8-bit forward coordinates, stochastic 4-bit backward coordinates | **84,813 s**<br>≈ 23h 34m | 3.2746@6150<br>13.79 s/step<br>396 B/token | 2026-10-04 |
-| 3 | [Paul Janson](https://x.com/janson002) | MAPL anchor 64 baseline | **164,525 s**<br>≈ 45h 42m | 3.2758@8225<br>20.00 s/step<br>646 B/token | 2026-09-30 |
-| 4 | [Pluralis Research](https://pluralis.ai/) | ReparamSSN baseline | **181,487 s**<br>≈ 50h 25m | 3.2758@9125<br>19.89 s/step<br>644 B/token | 2026-09-18 |
-| 5 | [Pluralis Research](https://pluralis.ai/) | Vanilla NanoGPT 8-stage pipeline baseline | **293,889 s**<br>≈ 81h 38m | 3.2744@2925<br>100.47 s/step<br>4,096 B/token | 2026-09-17 |
+| 1 | random_sequence | Optimized pipeline-parallel training. | **17,785 s**<br>≈ 4h 56m | 3.2757@5750<br>3.09 s/step<br>87 B/token | 2026-10-08 |
+| 2 | [Paul Janson](https://x.com/janson002) | mapl anchor 128, quantized | **72,443 s**<br>≈ 20h 7m | 3.2760@6825<br>10.61 s/step<br>253 B/token | 2026-10-05 |
+| 3 | random_sequence | SSN 8-bit forward coordinates, stochastic 4-bit backward coordinates | **84,813 s**<br>≈ 23h 34m | 3.2746@6150<br>13.79 s/step<br>396 B/token | 2026-10-04 |
+| 4 | [Paul Janson](https://x.com/janson002) | MAPL anchor 64 baseline | **164,525 s**<br>≈ 45h 42m | 3.2758@8225<br>20.00 s/step<br>646 B/token | 2026-09-30 |
+| 5 | [Pluralis Research](https://pluralis.ai/) | ReparamSSN baseline | **181,487 s**<br>≈ 50h 25m | 3.2758@9125<br>19.89 s/step<br>644 B/token | 2026-09-18 |
+| 6 | [Pluralis Research](https://pluralis.ai/) | Vanilla NanoGPT 8-stage pipeline baseline | **293,889 s**<br>≈ 81h 38m | 3.2744@2925<br>100.47 s/step<br>4,096 B/token | 2026-09-17 |
 
 ![Eight GPUs connected across a world map by WAN links, simulated on a single 8 × H100 instance with 200 Mb/s bandwidth and 50 ms latency per stage boundary.](assets/protocol_nanogpt_2.png)
 
