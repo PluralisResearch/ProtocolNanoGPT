@@ -478,7 +478,7 @@ rank = dist.get_rank()
 world_size = dist.get_world_size()
 
 # ===== FROZEN: self-logging — do not edit between these markers =====
-# rule 4's mechanism: the logfile must contain everything needed to reproduce the run,
+# rule 5's mechanism: the logfile must contain everything needed to reproduce the run,
 # starting with this file's own source
 if rank == 0:
     os.makedirs("logs", exist_ok=True)
@@ -528,6 +528,18 @@ stage_mod.compile(dynamic=False)
 stage_in, stage_out = None, None
 # ===== FROZEN: meter wrapper — do not edit between these markers =====
 stage = SimPipelineStage(stage_mod, rank, world_size, device, input_args=stage_in, output_args=stage_out)
+# ===== END FROZEN =====
+# ===== FROZEN: per-stage parameter budget — do not edit between these markers =====
+# Every stage holds between 5% and 50% of the cap, counted on the module the meter runs.
+stage_total = torch.tensor(sum(p.numel() for p in stage.submod.parameters()), device=device)
+all_totals = [torch.zeros_like(stage_total) for _ in range(world_size)]
+dist.all_gather(all_totals, stage_total)
+all_totals = [t.item() for t in all_totals]
+print0("stage params: " + ", ".join(f"{t:,}" for t in all_totals), console=True)
+assert sum(all_totals) <= BASELINE_PARAMS, f"rule 2: stages hold {sum(all_totals):,} params, over the baseline"
+for i, t in enumerate(all_totals):
+    assert 20 * t >= BASELINE_PARAMS and 2 * t <= BASELINE_PARAMS, \
+        f"rule 2: stage {i} holds {t:,} params, outside 5% to 50% of the baseline"
 # ===== END FROZEN =====
 schedule = Schedule1F1B(stage, n_microbatches=n_microbatches,
                         loss_fn=lambda out, tgt: out,

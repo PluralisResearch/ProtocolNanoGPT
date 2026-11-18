@@ -29,11 +29,11 @@ Run 1 answers "does this `train_steps` reach the target?"; run 2 answers "how ma
 
 **Optional speedup: early kill.** A run that is clearly behind the baseline at step 1000–2000 won't recover. Kill it and log it as `discard`, noting the step in the description. Changes whose effect only shows in the anneal must run to the end.
 
-**Optional speedup: the stat-sig stop scan.** Don't spend one full run per `train_steps` trim (5900 → 5800 → 5700…). Run one horizon; the script already prints val every 25 steps near the end. The earliest step whose val is ≤ 3.276 is a valid stop under README Rule 5 (the stopping criterion is fixed, not picked per run): quote `T = that step × s/step` and log that step in the `train_steps` column. Fold the trim into the *next* keep by setting its `train_steps` near the quoted stop — a shorter horizon anneals earlier and usually crosses lower. If no step reaches 3.276, it's a discard as usual.
+**Optional speedup: the stat-sig stop scan.** Don't spend one full run per `train_steps` trim (5900 → 5800 → 5700…). Run one horizon; the script already prints val every 25 steps near the end. The earliest step whose val is ≤ 3.276 is a valid stop under README Rule 6 (the stopping criterion is fixed, not picked per run): quote `T = that step × s/step` and log that step in the `train_steps` column. Fold the trim into the *next* keep by setting its `train_steps` near the quoted stop — a shorter horizon anneals earlier and usually crosses lower. If no step reaches 3.276, it's a discard as usual.
 
 **What you can change:** anything in `train_gpt.py` — architecture, wire codec, optimizer, hyperparameters, `train_steps`, training loop, `mbs`, pipeline schedule.
 
-**The goal is simple: get the lowest T.** Each idea gets one run, so README Rule 3 applies at n=1: **the loss run must finish below 3.276, not 3.28.** The scripts' `TARGET 3.276 REACHED` line tests the same 3.276 — read the `val_loss` number for the margin. A near-miss (3.276–3.28) is a discard. Do not rerun it hoping for a better init.
+**The goal is simple: get the lowest T.** Each idea gets one run, so README Rule 4 applies at n=1: **the loss run must finish below 3.276, not 3.28.** The scripts' `TARGET 3.276 REACHED` line tests the same 3.276 — read the `val_loss` number for the margin. A near-miss (3.276–3.28) is a discard. Do not rerun it hoping for a better init.
 
 **Simplicity:** all else equal, simpler is better. A small gain that adds hacky complexity is not worth it; equal or better results from deleting code is a keep.
 
