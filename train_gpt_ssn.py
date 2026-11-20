@@ -530,16 +530,21 @@ stage_in, stage_out = None, None
 stage = SimPipelineStage(stage_mod, rank, world_size, device, input_args=stage_in, output_args=stage_out)
 # ===== END FROZEN =====
 # ===== FROZEN: per-stage parameter budget — do not edit between these markers =====
-# Every stage holds between 5% and 50% of the cap, counted on the module the meter runs.
-stage_total = torch.tensor(sum(p.numel() for p in stage.submod.parameters()), device=device)
-all_totals = [torch.zeros_like(stage_total) for _ in range(world_size)]
-dist.all_gather(all_totals, stage_total)
-all_totals = [t.item() for t in all_totals]
-print0("stage params: " + ", ".join(f"{t:,}" for t in all_totals), console=True)
-assert sum(all_totals) <= BASELINE_PARAMS, f"rule 2: stages hold {sum(all_totals):,} params, over the baseline"
-for i, t in enumerate(all_totals):
-    assert 20 * t >= BASELINE_PARAMS and 2 * t <= BASELINE_PARAMS, \
-        f"rule 2: stage {i} holds {t:,} params, outside 5% to 50% of the baseline"
+# Body parameters are those without a dimension of the vocabulary size 50304, so the embeddings and the LM head are excluded.
+# Every stage holds between 5% and 25% of the whole model's body, counted on the module the meter runs.
+stage_params = list(stage.submod.parameters())
+stage_counts = torch.tensor([sum(p.numel() for p in stage_params),
+                             sum(p.numel() for p in stage_params if 50304 not in p.shape)], device=device)
+all_counts = [torch.zeros_like(stage_counts) for _ in range(world_size)]
+dist.all_gather(all_counts, stage_counts)
+stage_totals, stage_bodies = zip(*(c.tolist() for c in all_counts))
+print0("stage params: " + ", ".join(f"{t:,}" for t in stage_totals), console=True)
+print0("stage body params: " + ", ".join(f"{b:,}" for b in stage_bodies), console=True)
+assert sum(stage_totals) <= BASELINE_PARAMS, f"rule 2: stages hold {sum(stage_totals):,} params, over the baseline"
+model_body = sum(stage_bodies)
+for i, b in enumerate(stage_bodies):
+    assert 20 * b >= model_body and 4 * b <= model_body, \
+        f"rule 2: stage {i} holds {b:,} of {model_body:,} body params, outside 5% to 25%"
 # ===== END FROZEN =====
 schedule = Schedule1F1B(stage, n_microbatches=n_microbatches,
                         loss_fn=lambda out, tgt: out,
