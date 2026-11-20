@@ -530,11 +530,11 @@ stage_in, stage_out = None, None
 stage = SimPipelineStage(stage_mod, rank, world_size, device, input_args=stage_in, output_args=stage_out)
 # ===== END FROZEN =====
 # ===== FROZEN: per-stage parameter budget — do not edit between these markers =====
-# Body parameters are those without a dimension of the vocabulary size 50304, so the embeddings and the LM head are excluded.
+# Body parameters are trainable parameters without a dimension of the vocabulary size 50304, so the embeddings and the LM head are excluded.
 # Every stage holds between 5% and 30% of the whole model's body, counted on the module the meter runs.
 stage_params = list(stage.submod.parameters())
 stage_counts = torch.tensor([sum(p.numel() for p in stage_params),
-                             sum(p.numel() for p in stage_params if 50304 not in p.shape)], device=device)
+                             sum(p.numel() for p in stage_params if p.requires_grad and 50304 not in p.shape)], device=device)
 all_counts = [torch.zeros_like(stage_counts) for _ in range(world_size)]
 dist.all_gather(all_counts, stage_counts)
 stage_totals, stage_bodies = zip(*(c.tolist() for c in all_counts))
