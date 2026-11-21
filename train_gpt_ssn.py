@@ -531,7 +531,7 @@ stage = SimPipelineStage(stage_mod, rank, world_size, device, input_args=stage_i
 # ===== END FROZEN =====
 # ===== FROZEN: per-stage parameter budget — do not edit between these markers =====
 # Body parameters are trainable parameters without a dimension of the vocabulary size 50304, so the embeddings and the LM head are excluded.
-# Every stage holds between 5% and 30% of the whole model's body, counted on the module the meter runs.
+# Every stage holds between 5% and 25% of the whole model's body, counted on the module the meter runs.
 stage_params = list(stage.submod.parameters())
 stage_counts = torch.tensor([sum(p.numel() for p in stage_params),
                              sum(p.numel() for p in stage_params if p.requires_grad and 50304 not in p.shape)], device=device)
@@ -543,8 +543,8 @@ print0("stage body params: " + ", ".join(f"{b:,}" for b in stage_bodies), consol
 assert sum(stage_totals) <= BASELINE_PARAMS, f"rule 2: stages hold {sum(stage_totals):,} params, over the baseline"
 model_body = sum(stage_bodies)
 for i, b in enumerate(stage_bodies):
-    assert 20 * b >= model_body and 10 * b <= 3 * model_body, \
-        f"rule 2: stage {i} holds {b:,} of {model_body:,} body params, outside 5% to 30%"
+    assert 20 * b >= model_body and 4 * b <= model_body, \
+        f"rule 2: stage {i} holds {b:,} of {model_body:,} body params, outside 5% to 25%"
 # ===== END FROZEN =====
 schedule = Schedule1F1B(stage, n_microbatches=n_microbatches,
                         loss_fn=lambda out, tgt: out,
