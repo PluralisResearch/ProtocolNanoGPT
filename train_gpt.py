@@ -423,7 +423,7 @@ rank = dist.get_rank()
 world_size = dist.get_world_size()
 
 # ===== FROZEN: self-logging — do not edit between these markers =====
-# rule 4's mechanism: the logfile must contain everything needed to reproduce the run,
+# rule 5's mechanism: the logfile must contain everything needed to reproduce the run,
 # starting with this file's own source
 if rank == 0:
     os.makedirs("logs", exist_ok=True)
@@ -472,6 +472,23 @@ stage_mod.compile(dynamic=False)
 stage_in, stage_out = None, None
 # ===== FROZEN: meter wrapper — do not edit between these markers =====
 stage = SimPipelineStage(stage_mod, rank, world_size, device, input_args=stage_in, output_args=stage_out)
+# ===== END FROZEN =====
+# ===== FROZEN: per-stage parameter budget — do not edit between these markers =====
+# Body parameters are trainable parameters without a dimension of the vocabulary size 50304, so the embeddings and the LM head are excluded.
+# Every stage holds between 5% and 25% of the whole model's body, counted on the module the meter runs.
+stage_params = list(stage.submod.parameters())
+stage_counts = torch.tensor([sum(p.numel() for p in stage_params),
+                             sum(p.numel() for p in stage_params if p.requires_grad and 50304 not in p.shape)], device=device)
+all_counts = [torch.zeros_like(stage_counts) for _ in range(world_size)]
+dist.all_gather(all_counts, stage_counts)
+stage_totals, stage_bodies = zip(*(c.tolist() for c in all_counts))
+print0("stage params: " + ", ".join(f"{t:,}" for t in stage_totals), console=True)
+print0("stage body params: " + ", ".join(f"{b:,}" for b in stage_bodies), console=True)
+assert sum(stage_totals) <= BASELINE_PARAMS, f"rule 2: stages hold {sum(stage_totals):,} params, over the baseline"
+model_body = sum(stage_bodies)
+for i, b in enumerate(stage_bodies):
+    assert 20 * b >= model_body and 4 * b <= model_body, \
+        f"rule 2: stage {i} holds {b:,} of {model_body:,} body params, outside 5% to 25%"
 # ===== END FROZEN =====
 schedule = Schedule1F1B(stage, n_microbatches=n_microbatches,
                         loss_fn=lambda out, tgt: out,
