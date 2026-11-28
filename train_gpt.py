@@ -609,7 +609,7 @@ for _ in range(num_trials):
                        console=True)
             # steady state: the three latest windows agree within 1% (window 1 is compile and never counts).
             if WAN_MODE == "on" and step == val_step_freq:
-                wire_start = stage.wire_bits
+                wire_start, time_start = stage.wire_bits, training_time
             if WAN_MODE == "on" and step > val_step_freq and not steady_found:
                 windows.append(step_avg)
                 wire = torch.tensor([float(stage.wire_bits - wire_start)], dtype=torch.float64, device=device)
@@ -622,6 +622,13 @@ for _ in range(num_trials):
                            + f" bytes_per_token:{bytes_per_token:.1f}")
                     print0(f"T = {train_steps} steps x {steady:.4f}s = {T:.1f}s", console=True)
                     steady_found = True
+            # a run timed to the end also prints its average step after window 1: T = q x this step_avg
+            if WAN_MODE == "on" and step == train_steps:
+                full_avg = (training_time - time_start) / (step - val_step_freq)
+                wire = torch.tensor([float(stage.wire_bits - wire_start)], dtype=torch.float64, device=device)
+                dist.all_reduce(wire)
+                bytes_per_token = wire.item() / 8 / (world_size - 1) / (batch_size * (step - val_step_freq))
+                print0(f"FULL at step:{step} step_avg:{1000*full_avg:.2f}ms bytes_per_token:{bytes_per_token:.1f}", console=True)
             # ===== END FROZEN =====
             # The timing run stops at steady state. Delete this line to run WAN_MODE=on to the end.
             if steady_found: break
