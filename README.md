@@ -8,36 +8,37 @@ Live board with the record-progression plot: [pluralis.ai/protocol-nanogpt](http
 
 | # | Author | Description | T | Evidence | Date |
 |---:|---|---|---|---|---:|
-| 1 | [Paul Janson](https://x.com/janson002) | MAPL v2.0.2 | **3,254 s**<br>≈ 54m | 3.2745@2350<br>1.38 s/step<br>39 B/token | 2026-11-28 |
-| 2 | [LOG-POSTECH](https://x.com/sungbin_shin) | v5 | **3,329 s**<br>≈ 55m | 3.2755@3275<br>1.02 s/step<br>31 B/token | 2026-11-27 |
-| 3 | [Paul Janson](https://x.com/janson002) | MAPL v2.01 | **3,463 s**<br>≈ 58m | 3.2698@2500<br>1.39 s/step<br>39 B/token | 2026-11-25 |
-| 4 | [Paul Janson](https://x.com/janson002) | MAPL v2 freeze | **4,987 s**<br>≈ 1h 23m | 3.2737@2475<br>2.02 s/step<br>68 B/token | 2026-11-23 |
-| 5 | [Kishore Nori](https://x.com/kishore_nori) | v3 | **5,160 s**<br>≈ 1h 26m | 3.2754@3150<br>1.64 s/step<br>45 B/token | 2026-11-28 |
-| 6 | [Paul Janson](https://x.com/janson002) | MAPLv2 | **5,550 s**<br>≈ 1h 32m | 3.2729@2375<br>2.34 s/step<br>70 B/token | 2026-11-22 |
-| 7 | [LOG-POSTECH](https://x.com/sungbin_shin) | v4 | **5,962 s**<br>≈ 1h 39m | 3.2716@3125<br>1.91 s/step<br>60 B/token | 2026-11-16 |
-| 8 | [test](https://x.com/Xingyu_9) | Compressed pipeline communication with an overlapped schedule. | **5,986 s**<br>≈ 1h 40m | 3.2747@2625<br>2.28 s/step<br>57 B/token | 2026-10-17 |
-| 9 | [LOG-POSTECH](https://x.com/sungbin_shin) | v3 | **6,298 s**<br>≈ 1h 45m | 3.2760@3475<br>1.81 s/step<br>54 B/token | 2026-11-12 |
-| 10 | RNDTST | v0 | **7,426 s**<br>≈ 2h 3m | 3.2755@2500<br>2.97 s/step<br>66 B/token | 2026-11-25 |
-| 11 | [LOG-POSTECH](https://x.com/sungbin_shin) | v2 | **7,501 s**<br>≈ 2h 5m | 3.2744@3225<br>2.33 s/step<br>65 B/token | 2026-11-09 |
-| 12 | [vatsal](https://x.com/vatsalshah01) | w4_05: frozen MAPL with mixed boundary ranks and late-stage loops | **9,071 s**<br>≈ 2h 31m | 3.2759@2750<br>3.30 s/step<br>65 B/token | 2026-11-26 |
-| 13 | [Kishore Nori](https://x.com/kishore_nori) | v2 | **11,161 s**<br>≈ 3h 6m | 3.2755@6100<br>1.83 s/step<br>56 B/token | 2026-11-22 |
-| 14 | [Kishore Nori](https://x.com/kishore_nori) | Compressed subspace boundary with an overlapped async pipeline | **11,639 s**<br>≈ 3h 14m | 3.2757@6175<br>1.88 s/step<br>59 B/token | 2026-11-12 |
-| 15 | looped_machines | Async flush-free 1F1B, fixed orthonormal 32-dimensional boundary with per-stage token anchors and causal 4-bit codes in both directions. | **12,385 s**<br>≈ 3h 26m | 3.2755@9000<br>1.38 s/step<br>36 B/token | 2026-11-27 |
-| 16 | [ReopenAI](https://x.com/Re_openAI) | K128 quantized boundaries with an asynchronous pipeline | **12,444 s**<br>≈ 3h 27m | 3.2683@1750<br>7.11 s/step<br>132 B/token | 2026-11-26 |
-| 17 | random_sequence | v3 | **12,663 s**<br>≈ 3h 31m | 3.2750@4775<br>2.65 s/step<br>66 B/token | 2026-10-13 |
-| 18 | [LOG-POSTECH](https://x.com/sungbin_shin) | Additional compression with SSN | **13,903 s**<br>≈ 3h 52m | 3.2752@4600<br>3.02 s/step<br>123 B/token | 2026-10-30 |
-| 19 | random_sequence | Optimized pipeline-parallel training. | **17,785 s**<br>≈ 4h 56m | 3.2757@5750<br>3.09 s/step<br>87 B/token | 2026-10-08 |
-| 20 | [lusxvr](https://x.com/lusxvr) | v1 | **41,099 s**<br>≈ 11h 25m | 3.2758@7750<br>5.30 s/step<br>197 B/token | 2026-11-07 |
-| 21 | [ZHouyuhan](https://x.com/Dayuxiaoshui) | ReparamSSN K160 + continuous 1F1B (weight stashing, staleness<=1) + per-stage value embeddings + full-rank attn write + 2x shared-weight block loop; wire: 6-bit RTN fwd / 4-bit stochastic bwd, 207 B/token | **41,826 s**<br>≈ 11h 37m | 3.2742@7625<br>5.49 s/step<br>207 B/token | 2026-11-02 |
-| 22 | [Paul Janson](https://x.com/janson002) | mapl anchor 128, quantized | **72,443 s**<br>≈ 20h 7m | 3.2760@6825<br>10.61 s/step<br>253 B/token | 2026-10-05 |
-| 23 | random_sequence | SSN 8-bit forward coordinates, stochastic 4-bit backward coordinates | **84,813 s**<br>≈ 23h 34m | 3.2746@6150<br>13.79 s/step<br>396 B/token | 2026-10-04 |
-| 24 | [Dmitry Abulkanou](https://x.com/dabulkhanov_) | - | **87,976 s**<br>≈ 24h 26m | 3.2756@9275<br>9.49 s/step<br>246 B/token | 2026-10-30 |
-| 25 | [Dmitry Abulkanou](https://x.com/dabulkhanov_) | SSN K=160 with int8 forward / stochastic int4 backward coordinate quantization | **94,334 s**<br>≈ 26h 12m | 3.2759@9275<br>10.17 s/step<br>246 B/token | 2026-10-26 |
-| 26 | [ZHouyuhan](https://x.com/Dayuxiaoshui) | ReparamSSN K160 + int8 wire codec (per-token bf16 scale, RTN fwd / stochastic-rounding bwd), 16 microbatches | **112,620 s**<br>≈ 31h 17m | 3.2754@9150<br>12.31 s/step<br>326 B/token | 2026-11-01 |
-| 27 | ravit | 1123_v01 | **116,564 s**<br>≈ 32h 23m | 3.2743@3500<br>33.30 s/step<br>1,140 B/token | 2026-11-23 |
-| 28 | [Paul Janson](https://x.com/janson002) | MAPL anchor 64 baseline | **164,525 s**<br>≈ 45h 42m | 3.2758@8225<br>20.00 s/step<br>646 B/token | 2026-09-30 |
-| 29 | [Pluralis Research](https://pluralis.ai/) | ReparamSSN baseline | **181,487 s**<br>≈ 50h 25m | 3.2758@9125<br>19.89 s/step<br>644 B/token | 2026-09-18 |
-| 30 | [Pluralis Research](https://pluralis.ai/) | Vanilla NanoGPT 8-stage pipeline baseline | **293,889 s**<br>≈ 81h 38m | 3.2744@2925<br>100.47 s/step<br>4,096 B/token | 2026-09-17 |
+| 1 | [Fable 5.2](https://x.com/fzmushko) | v0 | **2,935 s**<br>≈ 49m | 3.2712@2125<br>1.38 s/step<br>39 B/token | 2026-11-28 |
+| 2 | [Paul Janson](https://x.com/janson002) | MAPL v2.0.2 | **3,254 s**<br>≈ 54m | 3.2745@2350<br>1.38 s/step<br>39 B/token | 2026-11-28 |
+| 3 | [LOG-POSTECH](https://x.com/sungbin_shin) | v5 | **3,329 s**<br>≈ 55m | 3.2755@3275<br>1.02 s/step<br>31 B/token | 2026-11-27 |
+| 4 | [Paul Janson](https://x.com/janson002) | MAPL v2.01 | **3,463 s**<br>≈ 58m | 3.2698@2500<br>1.39 s/step<br>39 B/token | 2026-11-25 |
+| 5 | [Paul Janson](https://x.com/janson002) | MAPL v2 freeze | **4,987 s**<br>≈ 1h 23m | 3.2737@2475<br>2.02 s/step<br>68 B/token | 2026-11-23 |
+| 6 | [Kishore Nori](https://x.com/kishore_nori) | v3 | **5,160 s**<br>≈ 1h 26m | 3.2754@3150<br>1.64 s/step<br>45 B/token | 2026-11-28 |
+| 7 | [Paul Janson](https://x.com/janson002) | MAPLv2 | **5,550 s**<br>≈ 1h 32m | 3.2729@2375<br>2.34 s/step<br>70 B/token | 2026-11-22 |
+| 8 | [LOG-POSTECH](https://x.com/sungbin_shin) | v4 | **5,962 s**<br>≈ 1h 39m | 3.2716@3125<br>1.91 s/step<br>60 B/token | 2026-11-16 |
+| 9 | [test](https://x.com/Xingyu_9) | Compressed pipeline communication with an overlapped schedule. | **5,986 s**<br>≈ 1h 40m | 3.2747@2625<br>2.28 s/step<br>57 B/token | 2026-10-17 |
+| 10 | [LOG-POSTECH](https://x.com/sungbin_shin) | v3 | **6,298 s**<br>≈ 1h 45m | 3.2760@3475<br>1.81 s/step<br>54 B/token | 2026-11-12 |
+| 11 | RNDTST | v0 | **7,426 s**<br>≈ 2h 3m | 3.2755@2500<br>2.97 s/step<br>66 B/token | 2026-11-25 |
+| 12 | [LOG-POSTECH](https://x.com/sungbin_shin) | v2 | **7,501 s**<br>≈ 2h 5m | 3.2744@3225<br>2.33 s/step<br>65 B/token | 2026-11-09 |
+| 13 | [vatsal](https://x.com/vatsalshah01) | w4_05: frozen MAPL with mixed boundary ranks and late-stage loops | **9,071 s**<br>≈ 2h 31m | 3.2759@2750<br>3.30 s/step<br>65 B/token | 2026-11-26 |
+| 14 | [Kishore Nori](https://x.com/kishore_nori) | v2 | **11,161 s**<br>≈ 3h 6m | 3.2755@6100<br>1.83 s/step<br>56 B/token | 2026-11-22 |
+| 15 | [Kishore Nori](https://x.com/kishore_nori) | Compressed subspace boundary with an overlapped async pipeline | **11,639 s**<br>≈ 3h 14m | 3.2757@6175<br>1.88 s/step<br>59 B/token | 2026-11-12 |
+| 16 | looped_machines | Async flush-free 1F1B, fixed orthonormal 32-dimensional boundary with per-stage token anchors and causal 4-bit codes in both directions. | **12,385 s**<br>≈ 3h 26m | 3.2755@9000<br>1.38 s/step<br>36 B/token | 2026-11-27 |
+| 17 | [ReopenAI](https://x.com/Re_openAI) | K128 quantized boundaries with an asynchronous pipeline | **12,444 s**<br>≈ 3h 27m | 3.2683@1750<br>7.11 s/step<br>132 B/token | 2026-11-26 |
+| 18 | random_sequence | v3 | **12,663 s**<br>≈ 3h 31m | 3.2750@4775<br>2.65 s/step<br>66 B/token | 2026-10-13 |
+| 19 | [LOG-POSTECH](https://x.com/sungbin_shin) | Additional compression with SSN | **13,903 s**<br>≈ 3h 52m | 3.2752@4600<br>3.02 s/step<br>123 B/token | 2026-10-30 |
+| 20 | random_sequence | Optimized pipeline-parallel training. | **17,785 s**<br>≈ 4h 56m | 3.2757@5750<br>3.09 s/step<br>87 B/token | 2026-10-08 |
+| 21 | [lusxvr](https://x.com/lusxvr) | v1 | **41,099 s**<br>≈ 11h 25m | 3.2758@7750<br>5.30 s/step<br>197 B/token | 2026-11-07 |
+| 22 | [ZHouyuhan](https://x.com/Dayuxiaoshui) | ReparamSSN K160 + continuous 1F1B (weight stashing, staleness<=1) + per-stage value embeddings + full-rank attn write + 2x shared-weight block loop; wire: 6-bit RTN fwd / 4-bit stochastic bwd, 207 B/token | **41,826 s**<br>≈ 11h 37m | 3.2742@7625<br>5.49 s/step<br>207 B/token | 2026-11-02 |
+| 23 | [Paul Janson](https://x.com/janson002) | mapl anchor 128, quantized | **72,443 s**<br>≈ 20h 7m | 3.2760@6825<br>10.61 s/step<br>253 B/token | 2026-10-05 |
+| 24 | random_sequence | SSN 8-bit forward coordinates, stochastic 4-bit backward coordinates | **84,813 s**<br>≈ 23h 34m | 3.2746@6150<br>13.79 s/step<br>396 B/token | 2026-10-04 |
+| 25 | [Dmitry Abulkanou](https://x.com/dabulkhanov_) | - | **87,976 s**<br>≈ 24h 26m | 3.2756@9275<br>9.49 s/step<br>246 B/token | 2026-10-30 |
+| 26 | [Dmitry Abulkanou](https://x.com/dabulkhanov_) | SSN K=160 with int8 forward / stochastic int4 backward coordinate quantization | **94,334 s**<br>≈ 26h 12m | 3.2759@9275<br>10.17 s/step<br>246 B/token | 2026-10-26 |
+| 27 | [ZHouyuhan](https://x.com/Dayuxiaoshui) | ReparamSSN K160 + int8 wire codec (per-token bf16 scale, RTN fwd / stochastic-rounding bwd), 16 microbatches | **112,620 s**<br>≈ 31h 17m | 3.2754@9150<br>12.31 s/step<br>326 B/token | 2026-11-01 |
+| 28 | ravit | 1123_v01 | **116,564 s**<br>≈ 32h 23m | 3.2743@3500<br>33.30 s/step<br>1,140 B/token | 2026-11-23 |
+| 29 | [Paul Janson](https://x.com/janson002) | MAPL anchor 64 baseline | **164,525 s**<br>≈ 45h 42m | 3.2758@8225<br>20.00 s/step<br>646 B/token | 2026-09-30 |
+| 30 | [Pluralis Research](https://pluralis.ai/) | ReparamSSN baseline | **181,487 s**<br>≈ 50h 25m | 3.2758@9125<br>19.89 s/step<br>644 B/token | 2026-09-18 |
+| 31 | [Pluralis Research](https://pluralis.ai/) | Vanilla NanoGPT 8-stage pipeline baseline | **293,889 s**<br>≈ 81h 38m | 3.2744@2925<br>100.47 s/step<br>4,096 B/token | 2026-09-17 |
 
 ![Eight GPUs connected across a world map by WAN links, simulated on a single 8 × H100 instance with 200 Mb/s bandwidth and 50 ms latency per stage boundary.](assets/protocol_nanogpt_2.png)
 
