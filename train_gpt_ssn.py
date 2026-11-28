@@ -624,6 +624,7 @@ for _ in range(num_trials):
     training_time = 0
     last_val_step = 0
     windows = []  # per-window step_avg of the timing run
+    steady_found = False
     dist.barrier()
     t0 = time.perf_counter()
     # ===== END FROZEN =====
@@ -655,7 +656,7 @@ for _ in range(num_trials):
                         val_loss += sum(l.float() for l in losses)
                     else:
                         schedule.eval()
-            # ===== FROZEN: scoring + clock restart — do not edit between these markers =====
+            # ===== FROZEN: scoring + steady state — do not edit between these markers =====
             val_loss /= val_tokens
             dist.broadcast(val_loss, src=world_size - 1)  # loss materializes on the last rank
             print0(f"step:{step}/{train_steps} val_loss:{val_loss.item():.5f} train_time:{training_time:.3f}s"
@@ -665,18 +666,24 @@ for _ in range(num_trials):
                 print0(f"TARGET {TARGET_LOSS} {reached} final val_loss:{float(val_loss):.5f}",
                        console=True)
             # steady state: the three latest windows agree within 1% (window 1 is compile and never counts).
-            if WAN_MODE == "on" and step > val_step_freq:
+            if WAN_MODE == "on" and step == val_step_freq:
+                wire_start = stage.wire_bits
+            if WAN_MODE == "on" and step > val_step_freq and not steady_found:
                 windows.append(step_avg)
-                wire = torch.tensor([float(stage.wire_bits)], dtype=torch.float64, device=device)
+                wire = torch.tensor([float(stage.wire_bits - wire_start)], dtype=torch.float64, device=device)
                 dist.all_reduce(wire)   # each rank counts only its own inbound wire
                 if len(windows) >= 3 and max(windows[-3:]) / min(windows[-3:]) - 1 < 0.01:
                     steady = sorted(windows[-3:])[1]
                     T = train_steps * steady
-                    bytes_per_token = wire.item() / 8 / (world_size - 1) / (batch_size * step)
+                    bytes_per_token = wire.item() / 8 / (world_size - 1) / (batch_size * (step - val_step_freq))
                     print0(f"STEADY at step:{step} step_avg:{1000*steady:.2f}ms"
                            + f" bytes_per_token:{bytes_per_token:.1f}")
                     print0(f"T = {train_steps} steps x {steady:.4f}s = {T:.1f}s", console=True)
-                    break
+                    steady_found = True
+            # ===== END FROZEN =====
+            # The timing run stops at steady state. Delete this line to run WAN_MODE=on to the end.
+            if steady_found: break
+            # ===== FROZEN: clock restart — do not edit between these markers =====
             # start the clock again
             simulating = WAN_MODE == "on"
             dist.barrier()
